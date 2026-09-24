@@ -1,0 +1,1692 @@
+<script lang="ts">
+	import { onMount } from 'svelte';
+	import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
+
+	const REFERENCE_WIDTH = 400;
+	const REFERENCE_HEIGHT = 744;
+	const REFERENCE_RATIO = REFERENCE_WIDTH / REFERENCE_HEIGHT;
+
+	type Tab = 'selector' | 'history';
+	type ModelName =
+		| 'HSL'
+		| 'HSV'
+		| 'OKLCH'
+		| 'RGB'
+		| 'LCH'
+		| 'OKLAB'
+		| 'P3'
+		| 'HEX';
+
+	type RGB = {
+		r: number;
+		g: number;
+		b: number;
+	};
+
+	type Control = {
+		key: string;
+		label: string;
+		min: number;
+		max: number;
+		step: number;
+		value: number;
+		suffix?: string;
+	};
+
+	type HistoryColor = {
+		hex: string;
+		name: string;
+		createdAt: number;
+	};
+
+	const models: ModelName[] = [
+		'HSL',
+		'HSV',
+		'OKLCH',
+		'RGB',
+		'LCH',
+		'OKLAB',
+		'P3',
+		'HEX'
+	];
+
+	let activeTab: Tab = 'selector';
+	let activeModel: ModelName = 'HSL';
+
+	let rgb: RGB = {
+		r: 217,
+		g: 217,
+		b: 217
+	};
+
+	let uiScale = 0.8;
+
+	let controls: Control[] = [];
+
+	let hexInput = '#D9D9D9';
+
+	let toastVisible = false;
+	let toastText = '';
+	let toastTimer: ReturnType<typeof setTimeout> | undefined;
+
+	let history: HistoryColor[] = [];
+	let historyView: 'list' | 'grid' = 'list';
+
+	let resizeGuard = false;
+
+	const clamp = (value: number, min: number, max: number) =>
+		Math.min(max, Math.max(min, value));
+
+	const round = (value: number, decimals = 2) => {
+		const factor = 10 ** decimals;
+		return Math.round(value * factor) / factor;
+	};
+
+	const normalizeHue = (h: number) => ((h % 360) + 360) % 360;
+
+	function componentToHex(value: number) {
+		return Math.round(clamp(value, 0, 255))
+			.toString(16)
+			.padStart(2, '0')
+			.toUpperCase();
+	}
+
+	function rgbToHex(color: RGB) {
+		return `#${componentToHex(color.r)}${componentToHex(color.g)}${componentToHex(color.b)}`;
+	}
+
+	function hexToRgb(hex: string): RGB | null {
+		const cleaned = hex.trim().replace('#', '');
+
+		if (!/^[0-9a-fA-F]{6}$/.test(cleaned)) {
+			return null;
+		}
+
+		return {
+			r: parseInt(cleaned.slice(0, 2), 16),
+			g: parseInt(cleaned.slice(2, 4), 16),
+			b: parseInt(cleaned.slice(4, 6), 16)
+		};
+	}
+
+	// Compact reference palette used to give copied colors a friendly
+	// label in history (nearest match by Euclidean distance in RGB).
+	const NAMED_COLORS: { name: string; r: number; g: number; b: number }[] = [
+		{ name: 'Black', r: 0, g: 0, b: 0 },
+		{ name: 'Charcoal', r: 54, g: 54, b: 54 },
+		{ name: 'Slate Gray', r: 112, g: 128, b: 144 },
+		{ name: 'Silver', r: 192, g: 192, b: 192 },
+		{ name: 'White', r: 255, g: 255, b: 255 },
+		{ name: 'Crimson', r: 220, g: 20, b: 60 },
+		{ name: 'Firebrick', r: 178, g: 34, b: 34 },
+		{ name: 'Red', r: 227, g: 27, b: 35 },
+		{ name: 'Maroon', r: 128, g: 0, b: 0 },
+		{ name: 'Tomato', r: 255, g: 99, b: 71 },
+		{ name: 'Coral', r: 255, g: 127, b: 80 },
+		{ name: 'Orange', r: 255, g: 140, b: 0 },
+		{ name: 'Amber', r: 255, g: 191, b: 0 },
+		{ name: 'Gold', r: 255, g: 215, b: 0 },
+		{ name: 'Yellow', r: 255, g: 221, b: 0 },
+		{ name: 'Olive', r: 128, g: 128, b: 0 },
+		{ name: 'Lime', r: 50, g: 205, b: 50 },
+		{ name: 'Emerald', r: 0, g: 166, b: 127 },
+		{ name: 'Sea Green', r: 46, g: 139, b: 87 },
+		{ name: 'Forest Green', r: 34, g: 139, b: 34 },
+		{ name: 'Green', r: 0, g: 128, b: 0 },
+		{ name: 'Teal', r: 0, g: 128, b: 128 },
+		{ name: 'Turquoise', r: 64, g: 224, b: 208 },
+		{ name: 'Cyan', r: 0, g: 200, b: 210 },
+		{ name: 'Sky Blue', r: 135, g: 206, b: 235 },
+		{ name: 'Steel Blue', r: 70, g: 130, b: 180 },
+		{ name: 'Blue', r: 30, g: 90, b: 220 },
+		{ name: 'Navy', r: 0, g: 0, b: 128 },
+		{ name: 'Indigo', r: 75, g: 0, b: 130 },
+		{ name: 'Violet', r: 138, g: 43, b: 226 },
+		{ name: 'Purple', r: 128, g: 0, b: 128 },
+		{ name: 'Orchid', r: 218, g: 112, b: 214 },
+		{ name: 'Magenta', r: 217, g: 22, b: 158 },
+		{ name: 'Pink', r: 255, g: 105, b: 180 },
+		{ name: 'Rose', r: 224, g: 17, b: 95 },
+		{ name: 'Brown', r: 139, g: 69, b: 19 },
+		{ name: 'Sienna', r: 160, g: 82, b: 45 },
+		{ name: 'Chocolate', r: 210, g: 105, b: 30 },
+		{ name: 'Tan', r: 210, g: 180, b: 140 },
+		{ name: 'Beige', r: 222, g: 205, b: 168 },
+		{ name: 'Khaki', r: 195, g: 176, b: 145 }
+	];
+
+	function nearestColorName(color: RGB) {
+		let best = NAMED_COLORS[0];
+		let bestDistance = Infinity;
+
+		for (const candidate of NAMED_COLORS) {
+			const dr = color.r - candidate.r;
+			const dg = color.g - candidate.g;
+			const db = color.b - candidate.b;
+
+			const distance = dr * dr + dg * dg + db * db;
+
+			if (distance < bestDistance) {
+				bestDistance = distance;
+				best = candidate;
+			}
+		}
+
+		return best.name;
+	}
+
+	function srgbToLinear(value: number) {
+		const v = value / 255;
+		return v <= 0.04045
+			? v / 12.92
+			: Math.pow((v + 0.055) / 1.055, 2.4);
+	}
+
+	function linearToSrgb(value: number) {
+		const v =
+			value <= 0.0031308
+				? 12.92 * value
+				: 1.055 * Math.pow(Math.max(value, 0), 1 / 2.4) - 0.055;
+
+		return clamp(v * 255, 0, 255);
+	}
+
+	function rgbToXyz(color: RGB) {
+		const r = srgbToLinear(color.r);
+		const g = srgbToLinear(color.g);
+		const b = srgbToLinear(color.b);
+
+		return {
+			x: r * 0.4124564 + g * 0.3575761 + b * 0.1804375,
+			y: r * 0.2126729 + g * 0.7151522 + b * 0.072175,
+			z: r * 0.0193339 + g * 0.119192 + b * 0.9503041
+		};
+	}
+
+	function xyzToRgb(x: number, y: number, z: number): RGB {
+		const r =
+			x * 3.2404542 +
+			y * -1.5371385 +
+			z * -0.4985314;
+
+		const g =
+			x * -0.969266 +
+			y * 1.8760108 +
+			z * 0.041556;
+
+		const b =
+			x * 0.0556434 +
+			y * -0.2040259 +
+			z * 1.0572252;
+
+		return {
+			r: linearToSrgb(r),
+			g: linearToSrgb(g),
+			b: linearToSrgb(b)
+		};
+	}
+
+	function rgbToHsl(color: RGB) {
+		let r = color.r / 255;
+		let g = color.g / 255;
+		let b = color.b / 255;
+
+		const max = Math.max(r, g, b);
+		const min = Math.min(r, g, b);
+
+		let h = 0;
+		let s = 0;
+
+		const l = (max + min) / 2;
+		const d = max - min;
+
+		if (d !== 0) {
+			s = d / (1 - Math.abs(2 * l - 1));
+
+			switch (max) {
+				case r:
+					h = 60 * (((g - b) / d) % 6);
+					break;
+
+				case g:
+					h = 60 * ((b - r) / d + 2);
+					break;
+
+				case b:
+					h = 60 * ((r - g) / d + 4);
+					break;
+			}
+		}
+
+		return {
+			h: normalizeHue(h),
+			s: s * 100,
+			l: l * 100
+		};
+	}
+
+	function hslToRgb(h: number, s: number, l: number): RGB {
+		h = normalizeHue(h);
+		s = clamp(s, 0, 100) / 100;
+		l = clamp(l, 0, 100) / 100;
+
+		const c = (1 - Math.abs(2 * l - 1)) * s;
+		const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+		const m = l - c / 2;
+
+		let r = 0;
+		let g = 0;
+		let b = 0;
+
+		if (h < 60) {
+			r = c;
+			g = x;
+		} else if (h < 120) {
+			r = x;
+			g = c;
+		} else if (h < 180) {
+			g = c;
+			b = x;
+		} else if (h < 240) {
+			g = x;
+			b = c;
+		} else if (h < 300) {
+			r = x;
+			b = c;
+		} else {
+			r = c;
+			b = x;
+		}
+
+		return {
+			r: (r + m) * 255,
+			g: (g + m) * 255,
+			b: (b + m) * 255
+		};
+	}
+
+	function rgbToHsv(color: RGB) {
+		const r = color.r / 255;
+		const g = color.g / 255;
+		const b = color.b / 255;
+
+		const max = Math.max(r, g, b);
+		const min = Math.min(r, g, b);
+		const d = max - min;
+
+		let h = 0;
+
+		if (d !== 0) {
+			switch (max) {
+				case r:
+					h = 60 * (((g - b) / d) % 6);
+					break;
+				case g:
+					h = 60 * ((b - r) / d + 2);
+					break;
+				case b:
+					h = 60 * ((r - g) / d + 4);
+					break;
+			}
+		}
+
+		return {
+			h: normalizeHue(h),
+			s: max === 0 ? 0 : (d / max) * 100,
+			v: max * 100
+		};
+	}
+
+	function hsvToRgb(h: number, s: number, v: number): RGB {
+		h = normalizeHue(h);
+		s = clamp(s, 0, 100) / 100;
+		v = clamp(v, 0, 100) / 100;
+
+		const c = v * s;
+		const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+		const m = v - c;
+
+		let r = 0;
+		let g = 0;
+		let b = 0;
+
+		if (h < 60) {
+			r = c;
+			g = x;
+		} else if (h < 120) {
+			r = x;
+			g = c;
+		} else if (h < 180) {
+			g = c;
+			b = x;
+		} else if (h < 240) {
+			g = x;
+			b = c;
+		} else if (h < 300) {
+			r = x;
+			b = c;
+		} else {
+			r = c;
+			b = x;
+		}
+
+		return {
+			r: (r + m) * 255,
+			g: (g + m) * 255,
+			b: (b + m) * 255
+		};
+	}
+
+	function xyzToLab(x: number, y: number, z: number) {
+		const xn = 0.95047;
+		const yn = 1;
+		const zn = 1.08883;
+
+		const epsilon = 216 / 24389;
+		const kappa = 24389 / 27;
+
+		const f = (t: number) =>
+			t > epsilon
+				? Math.cbrt(t)
+				: (kappa * t + 16) / 116;
+
+		const fx = f(x / xn);
+		const fy = f(y / yn);
+		const fz = f(z / zn);
+
+		return {
+			l: 116 * fy - 16,
+			a: 500 * (fx - fy),
+			b: 200 * (fy - fz)
+		};
+	}
+
+	function labToXyz(l: number, a: number, b: number) {
+		const xn = 0.95047;
+		const yn = 1;
+		const zn = 1.08883;
+
+		const epsilon = 216 / 24389;
+		const kappa = 24389 / 27;
+
+		const fy = (l + 16) / 116;
+		const fx = fy + a / 500;
+		const fz = fy - b / 200;
+
+		const inverse = (t: number) => {
+			const cube = t ** 3;
+
+			return cube > epsilon
+				? cube
+				: (116 * t - 16) / kappa;
+		};
+
+		return {
+			x: xn * inverse(fx),
+			y: yn * inverse(fy),
+			z: zn * inverse(fz)
+		};
+	}
+
+	function rgbToLch(color: RGB) {
+		const xyz = rgbToXyz(color);
+		const lab = xyzToLab(xyz.x, xyz.y, xyz.z);
+
+		const c = Math.sqrt(lab.a ** 2 + lab.b ** 2);
+		const h = normalizeHue(
+			Math.atan2(lab.b, lab.a) * (180 / Math.PI)
+		);
+
+		return {
+			l: lab.l,
+			c,
+			h
+		};
+	}
+
+	function lchToRgb(l: number, c: number, h: number): RGB {
+		const radians = normalizeHue(h) * (Math.PI / 180);
+
+		const a = c * Math.cos(radians);
+		const b = c * Math.sin(radians);
+
+		const xyz = labToXyz(l, a, b);
+
+		return xyzToRgb(xyz.x, xyz.y, xyz.z);
+	}
+
+	function xyzToOklab(x: number, y: number, z: number) {
+		const l =
+			0.819022437996703 * x +
+			0.3619062600528904 * y -
+			0.1288737815209879 * z;
+
+		const m =
+			0.0329836539323885 * x +
+			0.9292868615863434 * y +
+			0.0361446663506424 * z;
+
+		const s =
+			0.0481771893596242 * x +
+			0.2642395317527308 * y +
+			0.6335478284694309 * z;
+
+		const l_ = Math.cbrt(l);
+		const m_ = Math.cbrt(m);
+		const s_ = Math.cbrt(s);
+
+		return {
+			l:
+				0.2104542553 * l_ +
+				0.793617785 * m_ -
+				0.0040720468 * s_,
+
+			a:
+				1.9779984951 * l_ -
+				2.428592205 * m_ +
+				0.4505937099 * s_,
+
+			b:
+				0.0259040371 * l_ +
+				0.7827717662 * m_ -
+				0.808675766 * s_
+		};
+	}
+
+	function oklabToXyz(l: number, a: number, b: number) {
+		const l_ =
+			l +
+			0.3963377774 * a +
+			0.2158037573 * b;
+
+		const m_ =
+			l -
+			0.1055613458 * a -
+			0.0638541728 * b;
+
+		const s_ =
+			l -
+			0.0894841775 * a -
+			1.291485548 * b;
+
+		const ll = l_ ** 3;
+		const mm = m_ ** 3;
+		const ss = s_ ** 3;
+
+		return {
+			x:
+				1.2268798734 * ll -
+				0.5578149966 * mm -
+				0.2813910502 * ss,
+
+			y:
+				-0.0405757626 * ll +
+				1.1122868294 * mm -
+				0.0717110667 * ss,
+
+			z:
+				-0.0763729497 * ll -
+				0.4214933239 * mm +
+				1.5869240244 * ss
+		};
+	}
+
+	function rgbToOklab(color: RGB) {
+		const xyz = rgbToXyz(color);
+		return xyzToOklab(xyz.x, xyz.y, xyz.z);
+	}
+
+	function oklabToRgb(l: number, a: number, b: number): RGB {
+		const xyz = oklabToXyz(l, a, b);
+		return xyzToRgb(xyz.x, xyz.y, xyz.z);
+	}
+
+	function rgbToOklch(color: RGB) {
+		const lab = rgbToOklab(color);
+
+		return {
+			l: lab.l,
+			c: Math.sqrt(lab.a ** 2 + lab.b ** 2),
+			h: normalizeHue(
+				Math.atan2(lab.b, lab.a) * (180 / Math.PI)
+			)
+		};
+	}
+
+	function oklchToRgb(l: number, c: number, h: number): RGB {
+		const radians = normalizeHue(h) * (Math.PI / 180);
+
+		const a = c * Math.cos(radians);
+		const b = c * Math.sin(radians);
+
+		return oklabToRgb(l, a, b);
+	}
+
+	function linearP3ToXyz(r: number, g: number, b: number) {
+		return {
+			x:
+				r * 0.4865709486 +
+				g * 0.2656676932 +
+				b * 0.1982172852,
+
+			y:
+				r * 0.2289745641 +
+				g * 0.6917385218 +
+				b * 0.0792869141,
+
+			z:
+				g * 0.0451133819 +
+				b * 1.0439443689
+		};
+	}
+
+	function xyzToLinearP3(x: number, y: number, z: number) {
+		return {
+			r:
+				x * 2.4934969119 -
+				y * 0.9313836179 -
+				z * 0.4027107845,
+
+			g:
+				x * -0.8294889696 +
+				y * 1.7626640603 +
+				z * 0.0236246858,
+
+			b:
+				x * 0.03584583 -
+				y * 0.0761723893 +
+				z * 0.956884524
+		};
+	}
+
+	function encodeRgb01(value: number) {
+		return value <= 0.0031308
+			? 12.92 * value
+			: 1.055 * Math.pow(Math.max(value, 0), 1 / 2.4) - 0.055;
+	}
+
+	function decodeRgb01(value: number) {
+		return value <= 0.04045
+			? value / 12.92
+			: Math.pow((value + 0.055) / 1.055, 2.4);
+	}
+
+	function rgbToP3(color: RGB) {
+		const xyz = rgbToXyz(color);
+		const p3 = xyzToLinearP3(xyz.x, xyz.y, xyz.z);
+
+		return {
+			r: clamp(encodeRgb01(p3.r) * 100, 0, 100),
+			g: clamp(encodeRgb01(p3.g) * 100, 0, 100),
+			b: clamp(encodeRgb01(p3.b) * 100, 0, 100)
+		};
+	}
+
+	function p3ToRgb(r: number, g: number, b: number) {
+		const rp = decodeRgb01(clamp(r, 0, 100) / 100);
+		const gp = decodeRgb01(clamp(g, 0, 100) / 100);
+		const bp = decodeRgb01(clamp(b, 0, 100) / 100);
+
+		const xyz = linearP3ToXyz(rp, gp, bp);
+
+		return xyzToRgb(xyz.x, xyz.y, xyz.z);
+	}
+
+	function makeControls(model: ModelName): Control[] {
+		switch (model) {
+			case 'HSL': {
+				const value = rgbToHsl(rgb);
+
+				return [
+					{
+						key: 'h',
+						label: 'Hue',
+						min: 0,
+						max: 360,
+						step: 1,
+						value: round(value.h, 1)
+					},
+					{
+						key: 's',
+						label: 'Saturation',
+						min: 0,
+						max: 100,
+						step: 0.1,
+						value: round(value.s, 1)
+					},
+					{
+						key: 'l',
+						label: 'Lightness',
+						min: 0,
+						max: 100,
+						step: 0.1,
+						value: round(value.l, 1)
+					}
+				];
+			}
+
+			case 'HSV': {
+				const value = rgbToHsv(rgb);
+
+				return [
+					{
+						key: 'h',
+						label: 'Hue',
+						min: 0,
+						max: 360,
+						step: 1,
+						value: round(value.h, 1)
+					},
+					{
+						key: 's',
+						label: 'Saturation',
+						min: 0,
+						max: 100,
+						step: 0.1,
+						value: round(value.s, 1)
+					},
+					{
+						key: 'v',
+						label: 'Value',
+						min: 0,
+						max: 100,
+						step: 0.1,
+						value: round(value.v, 1)
+					}
+				];
+			}
+
+			case 'RGB':
+				return [
+					{
+						key: 'r',
+						label: 'Red',
+						min: 0,
+						max: 255,
+						step: 1,
+						value: Math.round(rgb.r)
+					},
+					{
+						key: 'g',
+						label: 'Green',
+						min: 0,
+						max: 255,
+						step: 1,
+						value: Math.round(rgb.g)
+					},
+					{
+						key: 'b',
+						label: 'Blue',
+						min: 0,
+						max: 255,
+						step: 1,
+						value: Math.round(rgb.b)
+					}
+				];
+
+			case 'LCH': {
+				const value = rgbToLch(rgb);
+
+				return [
+					{
+						key: 'l',
+						label: 'Lightness',
+						min: 0,
+						max: 100,
+						step: 0.1,
+						value: round(value.l, 1)
+					},
+					{
+						key: 'c',
+						label: 'Chroma',
+						min: 0,
+						max: 150,
+						step: 0.1,
+						value: round(value.c, 1)
+					},
+					{
+						key: 'h',
+						label: 'Hue',
+						min: 0,
+						max: 360,
+						step: 1,
+						value: round(value.h, 1)
+					}
+				];
+			}
+
+			case 'OKLAB': {
+				const value = rgbToOklab(rgb);
+
+				return [
+					{
+						key: 'l',
+						label: 'Lightness',
+						min: 0,
+						max: 1,
+						step: 0.001,
+						value: round(value.l, 3)
+					},
+					{
+						key: 'a',
+						label: 'A',
+						min: -0.4,
+						max: 0.4,
+						step: 0.001,
+						value: round(value.a, 3)
+					},
+					{
+						key: 'b',
+						label: 'B',
+						min: -0.4,
+						max: 0.4,
+						step: 0.001,
+						value: round(value.b, 3)
+					}
+				];
+			}
+
+			case 'OKLCH': {
+				const value = rgbToOklch(rgb);
+
+				return [
+					{
+						key: 'l',
+						label: 'Lightness',
+						min: 0,
+						max: 1,
+						step: 0.001,
+						value: round(value.l, 3)
+					},
+					{
+						key: 'c',
+						label: 'Chroma',
+						min: 0,
+						max: 0.4,
+						step: 0.001,
+						value: round(value.c, 3)
+					},
+					{
+						key: 'h',
+						label: 'Hue',
+						min: 0,
+						max: 360,
+						step: 1,
+						value: round(value.h, 1)
+					}
+				];
+			}
+
+			case 'P3': {
+				const value = rgbToP3(rgb);
+
+				return [
+					{
+						key: 'r',
+						label: 'Red',
+						min: 0,
+						max: 100,
+						step: 0.1,
+						value: round(value.r, 1)
+					},
+					{
+						key: 'g',
+						label: 'Green',
+						min: 0,
+						max: 100,
+						step: 0.1,
+						value: round(value.g, 1)
+					},
+					{
+						key: 'b',
+						label: 'Blue',
+						min: 0,
+						max: 100,
+						step: 0.1,
+						value: round(value.b, 1)
+					}
+				];
+			}
+			case 'HEX':
+				return [];
+		}
+	}
+
+	function syncControls() {
+		controls = makeControls(activeModel);
+		hexInput = rgbToHex(rgb);
+	}
+
+	function setModel(model: ModelName) {
+		activeModel = model;
+		syncControls();
+	}
+
+	function controlValue(key: string) {
+		return controls.find((control) => control.key === key)?.value ?? 0;
+	}
+
+	function updateRgbFromControls() {
+		switch (activeModel) {
+			case 'HSL':
+				rgb = hslToRgb(
+					controlValue('h'),
+					controlValue('s'),
+					controlValue('l')
+				);
+				break;
+
+			case 'HSV':
+				rgb = hsvToRgb(
+					controlValue('h'),
+					controlValue('s'),
+					controlValue('v')
+				);
+				break;
+
+			case 'RGB':
+				rgb = {
+					r: controlValue('r'),
+					g: controlValue('g'),
+					b: controlValue('b')
+				};
+				break;
+
+			case 'LCH':
+				rgb = lchToRgb(
+					controlValue('l'),
+					controlValue('c'),
+					controlValue('h')
+				);
+				break;
+
+			case 'OKLAB':
+				rgb = oklabToRgb(
+					controlValue('l'),
+					controlValue('a'),
+					controlValue('b')
+				);
+				break;
+
+			case 'OKLCH':
+				rgb = oklchToRgb(
+					controlValue('l'),
+					controlValue('c'),
+					controlValue('h')
+				);
+				break;
+
+			case 'P3':
+				rgb = p3ToRgb(
+					controlValue('r'),
+					controlValue('g'),
+					controlValue('b')
+				);
+				break;
+		}
+
+		hexInput = rgbToHex(rgb);
+	}
+
+	function updateControl(index: number, value: number) {
+		const control = controls[index];
+
+		control.value = clamp(
+			value,
+			control.min,
+			control.max
+		);
+
+		controls = [...controls];
+
+		updateRgbFromControls();
+	}
+
+	function handleHexInput(value: string) {
+		hexInput = value.toUpperCase();
+
+		const parsed = hexToRgb(hexInput);
+
+		if (parsed) {
+			rgb = parsed;
+		}
+	}
+
+	function commitHex() {
+		const parsed = hexToRgb(hexInput);
+
+		if (parsed) {
+			rgb = parsed;
+			hexInput = rgbToHex(parsed);
+		} else {
+			hexInput = rgbToHex(rgb);
+		}
+	}
+
+	function scrubValue(
+		event: PointerEvent,
+		index: number
+	) {
+		if (event.button !== 0) return;
+
+		const control = controls[index];
+
+		const startX = event.clientX;
+		const startValue = control.value;
+
+		const span = control.max - control.min;
+
+		const pixelsForRange = 180;
+
+		const onMove = (moveEvent: PointerEvent) => {
+			const deltaX = moveEvent.clientX - startX;
+
+			const next =
+				startValue +
+				(deltaX / pixelsForRange) * span;
+
+			const stepped =
+				Math.round(next / control.step) *
+				control.step;
+
+			updateControl(index, stepped);
+		};
+
+		const onUp = () => {
+			window.removeEventListener('pointermove', onMove);
+			window.removeEventListener('pointerup', onUp);
+		};
+
+		window.addEventListener('pointermove', onMove);
+		window.addEventListener('pointerup', onUp);
+	}
+
+	async function closeWindow() {
+		await getCurrentWindow().close();
+	}
+
+	async function startDragging(event: MouseEvent) {
+		const target = event.target as HTMLElement;
+
+		if (
+			target.closest('button') ||
+			target.closest('input')
+		) {
+			return;
+		}
+
+		await getCurrentWindow().startDragging();
+	}
+
+	async function startResize(
+		direction:
+			| 'NorthWest'
+			| 'NorthEast'
+			| 'SouthWest'
+			| 'SouthEast'
+	) {
+		await getCurrentWindow().startResizeDragging(direction);
+	}
+
+	function updateScale() {
+		uiScale = Math.min(
+			window.innerWidth / REFERENCE_WIDTH,
+			window.innerHeight / REFERENCE_HEIGHT
+		);
+
+		document.documentElement.style.setProperty(
+			'--ui-scale',
+			String(uiScale)
+		);
+	}
+
+	async function enforceAspectRatio() {
+		if (resizeGuard) return;
+
+		const appWindow = getCurrentWindow();
+
+		const size = await appWindow.innerSize();
+
+		const width = size.width;
+		const height = size.height;
+
+		const expectedHeight = width / REFERENCE_RATIO;
+
+		if (Math.abs(height - expectedHeight) < 2) {
+			return;
+		}
+
+		resizeGuard = true;
+
+		await appWindow.setSize(
+			new LogicalSize(
+				width,
+				expectedHeight
+			)
+		);
+
+		requestAnimationFrame(() => {
+			resizeGuard = false;
+		});
+	}
+
+	function showToast(message: string) {
+		toastText = message;
+		toastVisible = true;
+
+		if (toastTimer) {
+			clearTimeout(toastTimer);
+		}
+
+		toastTimer = setTimeout(() => {
+			toastVisible = false;
+		}, 1800);
+	}
+
+	function saveHistory() {
+		localStorage.setItem(
+			'procolorator-history',
+			JSON.stringify(history)
+		);
+	}
+
+	function addToHistory(hex: string) {
+		const parsed = hexToRgb(hex) ?? rgb;
+
+		history = [
+			{
+				hex,
+				name: nearestColorName(parsed),
+				createdAt: Date.now()
+			},
+			...history.filter(
+				(item) => item.hex !== hex
+			)
+		].slice(0, 30);
+
+		saveHistory();
+	}
+
+	async function copyColor(hex = rgbToHex(rgb)) {
+		try {
+			await navigator.clipboard.writeText(hex);
+		} catch {
+			const textarea =
+				document.createElement('textarea');
+
+			textarea.value = hex;
+			document.body.appendChild(textarea);
+
+			textarea.select();
+
+			document.execCommand('copy');
+
+			textarea.remove();
+		}
+
+		addToHistory(hex);
+
+		showToast(`${hex} is copied to clipboard`);
+	}
+
+	function setHistoryView(
+		view: 'list' | 'grid'
+	) {
+		historyView = view;
+
+		localStorage.setItem(
+			'procolorator-history-view',
+			view
+		);
+	}
+
+	onMount(() => {
+		const savedHistory =
+			localStorage.getItem(
+				'procolorator-history'
+			);
+
+		if (savedHistory) {
+			try {
+				history = JSON.parse(savedHistory);
+			} catch {
+				history = [];
+			}
+		}
+
+		const savedView =
+			localStorage.getItem(
+				'procolorator-history-view'
+			);
+
+		if (
+			savedView === 'list' ||
+			savedView === 'grid'
+		) {
+			historyView = savedView;
+		}
+
+		syncControls();
+		updateScale();
+
+		const appWindow = getCurrentWindow();
+
+		const unlistenResized = appWindow.onResized(
+			async () => {
+				updateScale();
+				await enforceAspectRatio();
+			}
+		);
+
+		window.addEventListener(
+			'resize',
+			updateScale
+		);
+
+		return () => {
+			window.removeEventListener(
+				'resize',
+				updateScale
+			);
+
+			unlistenResized.then((unlisten) =>
+				unlisten()
+			);
+		};
+	});
+</script>
+
+<div class="viewport">
+	<div
+		class="design-stage"
+		style={`transform: scale(${uiScale})`}
+	>
+		<div class="app-shell">
+			<header
+				class="titlebar"
+				data-tauri-drag-region
+				on:mousedown={startDragging}
+			>
+				<div
+					class="app-title"
+					data-tauri-drag-region
+				>
+					ProColorator
+				</div>
+
+				<button
+					class="close-button"
+					type="button"
+					aria-label="Close ProColorator"
+					on:click={closeWindow}
+				>
+					<svg
+						width="20"
+						height="20"
+						viewBox="0 0 20 20"
+						fill="none"
+						aria-hidden="true"
+					>
+						<path
+							d="M5 5L15 15M15 5L5 15"
+							stroke="currentColor"
+							stroke-width="1.6"
+							stroke-linecap="round"
+						/>
+					</svg>
+				</button>
+			</header>
+
+			<nav class="tabs">
+				<button
+					class:active={activeTab === 'selector'}
+					class="tab-button"
+					type="button"
+					on:click={() =>
+						(activeTab = 'selector')}
+				>
+					<svg
+						class="tab-icon"
+						width="20"
+						height="20"
+						viewBox="0 0 24 24"
+						fill="none"
+						aria-hidden="true"
+					>
+						<path
+							d="m2 22 1-1h3l9-9"
+							stroke="currentColor"
+							stroke-width="1.5"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+						/>
+						<path
+							d="M3 21v-3l9-9"
+							stroke="currentColor"
+							stroke-width="1.5"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+						/>
+						<path
+							d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z"
+							stroke="currentColor"
+							stroke-width="1.5"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+						/>
+					</svg>
+
+					<span>Selector</span>
+				</button>
+
+				<button
+					class:active={activeTab === 'history'}
+					class="tab-button"
+					type="button"
+					on:click={() =>
+						(activeTab = 'history')}
+				>
+					<svg
+						class="tab-icon"
+						width="20"
+						height="20"
+						viewBox="0 0 20 20"
+						fill="none"
+						aria-hidden="true"
+					>
+						<path
+							d="M4.8 5.5H15.2M4.8 10H15.2M4.8 14.5H15.2"
+							stroke="currentColor"
+							stroke-width="1.5"
+							stroke-linecap="round"
+						/>
+						<circle
+							cx="2.7"
+							cy="5.5"
+							r="0.9"
+							fill="currentColor"
+						/>
+						<circle
+							cx="2.7"
+							cy="10"
+							r="0.9"
+							fill="currentColor"
+						/>
+						<circle
+							cx="2.7"
+							cy="14.5"
+							r="0.9"
+							fill="currentColor"
+						/>
+					</svg>
+
+					<span>History</span>
+				</button>
+			</nav>
+
+			{#if activeTab === 'selector'}
+				<main class="selector-page">
+					<section
+						class="color-preview"
+						style={`background: ${rgbToHex(rgb)}`}
+					>
+						<div class="picker-target">
+							<span></span>
+						</div>
+					</section>
+
+					<section class="model-grid">
+						{#each models as model}
+							<button
+								type="button"
+								class="model-button"
+								class:active={activeModel === model}
+								on:click={() => setModel(model)}
+							>
+								{model}
+							</button>
+						{/each}
+					</section>
+
+					<section class="controls-panel">
+						{#if activeModel === 'HEX'}
+							<div class="hex-control">
+								<label for="hex-value">
+									HEX
+								</label>
+
+								<input
+									id="hex-value"
+									class="hex-input"
+									type="text"
+									maxlength="7"
+									spellcheck="false"
+									value={hexInput}
+									on:input={(event) =>
+										handleHexInput(
+											(
+												event.currentTarget as HTMLInputElement
+											).value
+										)}
+									on:blur={commitHex}
+									on:keydown={(event) => {
+										if (
+											event.key ===
+											'Enter'
+										) {
+											(
+												event.currentTarget as HTMLInputElement
+											).blur();
+										}
+									}}
+								/>
+							</div>
+						{:else}
+							{#each controls as control, index}
+								<div class="control-row">
+									<label class="control-label">
+										{control.label}
+									</label>
+
+									<div class="control-inputs">
+										<input
+											class="range-slider"
+											type="range"
+											min={control.min}
+											max={control.max}
+											step={control.step}
+											value={control.value}
+											on:input={(event) =>
+												updateControl(
+													index,
+													Number(
+														(
+															event.currentTarget as HTMLInputElement
+														).value
+													)
+												)}
+										/>
+
+										<input
+											class="number-input"
+											type="number"
+											inputmode="decimal"
+											min={control.min}
+											max={control.max}
+											step={control.step}
+											value={control.value}
+											on:input={(event) =>
+												updateControl(
+													index,
+													Number(
+														(
+															event.currentTarget as HTMLInputElement
+														).value
+													)
+												)}
+											on:pointerdown={(event) =>
+												scrubValue(
+													event,
+													index
+												)}
+											aria-label={`${control.label} value`}
+										/>
+									</div>
+								</div>
+							{/each}
+						{/if}
+
+						<button
+							type="button"
+							class="copy-button"
+							on:click={() => copyColor()}
+						>
+							<svg
+								class="copy-icon"
+								xmlns="http://www.w3.org/2000/svg"
+								width="20"
+								height="20"
+								fill="currentColor"
+								viewBox="0 0 256 256"
+								aria-hidden="true"
+							>
+								<path
+									d="M216,32H88a8,8,0,0,0-8,8V80H40a8,8,0,0,0-8,8V216a8,8,0,0,0,8,8H168a8,8,0,0,0,8-8V176h40a8,8,0,0,0,8-8V40A8,8,0,0,0,216,32ZM160,208H48V96H160Zm48-48H176V88a8,8,0,0,0-8-8H96V48H208Z"
+								/>
+							</svg>
+
+							<span>Copy color</span>
+						</button>
+					</section>
+				</main>
+			{:else}
+				<main class="history-page">
+					{#if history.length > 0}
+						<div class="history-header">
+							<p>
+								Click on color to copy to clipboard
+							</p>
+
+							<div class="history-view-toggle">
+								<button
+									type="button"
+									class:active={historyView === 'list'}
+									on:click={() =>
+										setHistoryView('list')}
+									aria-label="List view"
+								>
+									<svg
+										width="20"
+										height="20"
+										viewBox="0 0 20 20"
+										fill="none"
+									>
+										<path
+											d="M6 5H16M6 10H16M6 15H16"
+											stroke="currentColor"
+											stroke-width="1.5"
+											stroke-linecap="round"
+										/>
+										<circle
+											cx="3"
+											cy="5"
+											r="1"
+											fill="currentColor"
+										/>
+										<circle
+											cx="3"
+											cy="10"
+											r="1"
+											fill="currentColor"
+										/>
+										<circle
+											cx="3"
+											cy="15"
+											r="1"
+											fill="currentColor"
+										/>
+									</svg>
+								</button>
+
+								<button
+									type="button"
+									class:active={historyView === 'grid'}
+									on:click={() =>
+										setHistoryView('grid')}
+									aria-label="Grid view"
+								>
+									<svg
+										width="20"
+										height="20"
+										viewBox="0 0 20 20"
+										fill="none"
+									>
+										<rect
+											x="3"
+											y="3"
+											width="5"
+											height="5"
+											r="0.5"
+											stroke="currentColor"
+											stroke-width="1.3"
+										/>
+										<rect
+											x="12"
+											y="3"
+											width="5"
+											height="5"
+											r="0.5"
+											stroke="currentColor"
+											stroke-width="1.3"
+										/>
+										<rect
+											x="3"
+											y="12"
+											width="5"
+											height="5"
+											r="0.5"
+											stroke="currentColor"
+											stroke-width="1.3"
+										/>
+										<rect
+											x="12"
+											y="12"
+											width="5"
+											height="5"
+											r="0.5"
+											stroke="currentColor"
+											stroke-width="1.3"
+										/>
+									</svg>
+								</button>
+							</div>
+						</div>
+					{/if}
+
+					<div class="history-scroll">
+						{#if history.length === 0}
+							<div class="history-empty">
+								<h2>History is empty</h2>
+								<p>
+									Selected colors through selector
+									are shown here
+								</p>
+							</div>
+						{:else if historyView === 'list'}
+							<div class="history-list">
+								{#each history as color}
+									<button
+										type="button"
+										class="history-row"
+										on:click={() =>
+											copyColor(color.hex)}
+									>
+										<div class="history-text">
+											<span class="history-name">
+												{color.name}
+											</span>
+
+											<span class="history-hex">
+												{color.hex}
+											</span>
+										</div>
+
+										<div
+											class="history-swatch"
+											style={`background:${color.hex}`}
+										></div>
+									</button>
+								{/each}
+							</div>
+						{:else}
+							<div class="history-grid">
+								{#each history as color}
+									<button
+										type="button"
+										class="history-card"
+										on:click={() =>
+											copyColor(color.hex)}
+									>
+										<div
+											class="history-card-color"
+											style={`background:${color.hex}`}
+										></div>
+
+										<span>{color.hex}</span>
+									</button>
+								{/each}
+							</div>
+						{/if}
+					</div>
+				</main>
+			{/if}
+
+			{#if toastVisible}
+				<div
+					class="copy-toast"
+					role="status"
+					aria-live="polite"
+				>
+					<svg
+						class="toast-icon"
+						width="20"
+						height="20"
+						viewBox="0 0 256 256"
+						fill="none"
+						aria-hidden="true"
+					>
+						<circle
+							cx="128"
+							cy="128"
+							r="96"
+							stroke="currentColor"
+							stroke-width="16"
+						/>
+						<path
+							d="M128 112V176"
+							stroke="currentColor"
+							stroke-width="16"
+							stroke-linecap="round"
+						/>
+						<circle
+							cx="128"
+							cy="80"
+							r="9"
+							fill="currentColor"
+						/>
+					</svg>
+
+					<span>{toastText}</span>
+				</div>
+			{/if}
+
+			<div
+				class="resize-corner resize-nw"
+				on:mousedown={() =>
+					startResize('NorthWest')}
+				aria-hidden="true"
+			></div>
+
+			<div
+				class="resize-corner resize-ne"
+				on:mousedown={() =>
+					startResize('NorthEast')}
+				aria-hidden="true"
+			></div>
+
+			<div
+				class="resize-corner resize-sw"
+				on:mousedown={() =>
+					startResize('SouthWest')}
+				aria-hidden="true"
+			></div>
+
+			<div
+				class="resize-corner resize-se"
+				on:mousedown={() =>
+					startResize('SouthEast')}
+				aria-hidden="true"
+			></div>
+		</div>
+	</div>
+</div>
