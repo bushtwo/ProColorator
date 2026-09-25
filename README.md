@@ -1,6 +1,6 @@
-# Tauri + SvelteKit + TypeScript
+# Procolorator
 
-This template should help get you started developing with Tauri, SvelteKit and TypeScript in Vite.
+Hi.. I am a Designer who is enthusiast to solve problems and build things and i made this Color Picker app for my personal use and also keeping other users in mind. It is still in infancy and needs lot of work to make it more stable and useful. I made using Tauri, SvelteKit and TypeScript in Vite and Rust as backend. Try it, and test it.
 
 -> Go to [Releases](https://github.com/bushtwo/ProColorator/releases) and download Win/Mac version to test the app.
 
