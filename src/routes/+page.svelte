@@ -61,7 +61,7 @@
 		b: 217
 	};
 
-	let uiScale = 0.8;
+	let uiScale = 1;
 
 	let controls: Control[] = [];
 
@@ -74,6 +74,10 @@
 	let history: HistoryColor[] = [];
 	let historyView: 'list' | 'grid' = 'list';
 
+	let lastWidth = REFERENCE_WIDTH;
+	let lastHeight = REFERENCE_HEIGHT;
+	let correctingSize = false;
+	let disposed = false;
 	let resizeSettleTimer: ReturnType<typeof setTimeout> | null = null;
 
 	const clamp = (value: number, min: number, max: number) =>
@@ -1355,6 +1359,8 @@
 	}
 
 	async function closeWindow() {
+		if (resizeSettleTimer) clearTimeout(resizeSettleTimer);
+		await enforceAspectRatio();
 		await getCurrentWindow().close();
 	}
 
@@ -1398,63 +1404,64 @@
 		);
 	}
 
-	async function enforceAspectRatio(attempt = 0) {
-		const appWindow = getCurrentWindow();
-
-		// innerSize() returns PHYSICAL pixels, but LogicalSize()
-		// expects LOGICAL pixels. On any display with a DPI scale
-		// factor other than 1, mixing the two causes the window to
-		// grow/shrink incorrectly on every resize event.
-		const scaleFactor = await appWindow.scaleFactor();
-		const physicalSize = await appWindow.innerSize();
-		const logicalSize = physicalSize.toLogical(scaleFactor);
-
-		const width = logicalSize.width;
-		const height = logicalSize.height;
-
-		const expectedHeight = width / REFERENCE_RATIO;
-
-		if (Math.abs(height - expectedHeight) < 2) {
-			return;
-		}
-
-		await appWindow.setSize(
-			new LogicalSize(
-				width,
-				expectedHeight
-			)
-		);
-
-		// Some window managers (tiling WMs, or ones that clamp to
-		// minHeight/minHeight constraints, or just apply the resize
-		// asynchronously) don't honor setSize() on the first try, or
-		// apply it a frame late. Re-check shortly after and correct
-		// again if it didn't stick, instead of silently leaving
-		// dead space. Capped so a WM that refuses entirely can't
-		// loop forever.
-		if (attempt < 3) {
-			setTimeout(() => {
-				enforceAspectRatio(attempt + 1);
-			}, 60);
+	async function enforceAspectRatio() {
+		if (correctingSize || disposed) return;
+		correctingSize = true;
+		try {
+			const appWindow = getCurrentWindow();
+			const dpi = await appWindow.scaleFactor();
+			const size = (await appWindow.innerSize()).toLogical(dpi);
+			if (disposed) return;
+			// Follow the dimension the user changed most, including height-only drags.
+			const widthDelta = Math.abs(size.width - lastWidth) / REFERENCE_WIDTH;
+			const heightDelta = Math.abs(size.height - lastHeight) / REFERENCE_HEIGHT;
+			const desiredScale = heightDelta > widthDelta
+				? size.height / REFERENCE_HEIGHT : size.width / REFERENCE_WIDTH;
+			const maxScale = Math.min(screen.availWidth / REFERENCE_WIDTH,
+				screen.availHeight / REFERENCE_HEIGHT);
+			const scale = Math.max(0.7, Math.min(desiredScale, maxScale));
+			const width = Math.round(REFERENCE_WIDTH * scale);
+			const height = Math.round(REFERENCE_HEIGHT * scale);
+			lastWidth = width;
+			lastHeight = height;
+			if (Math.abs(size.width - width) > 1 || Math.abs(size.height - height) > 1) {
+				await appWindow.setSize(new LogicalSize(width, height));
+			}
+			localStorage.setItem('procolorator-window-width', String(width));
+		} catch (error) {
+			console.error('Could not resize window', error);
+		} finally {
+			correctingSize = false;
+			if (!disposed) updateScale();
 		}
 	}
 
-	// onResized fires rapidly (many times per second) during a
-	// live OS resize drag. enforceAspectRatio() makes several
-	// awaited IPC round-trips to the Rust backend, so calling it
-	// on every single event causes overlapping, racing corrections
-	// that fight each other and the live drag -- this is what was
-	// producing stuck dead space and rendering glitches. Instead,
-	// only run the actual correction once resize activity settles.
 	function scheduleAspectRatioCorrection() {
-		if (resizeSettleTimer) {
-			clearTimeout(resizeSettleTimer);
-		}
-
+		if (disposed || correctingSize) return;
+		if (resizeSettleTimer) clearTimeout(resizeSettleTimer);
 		resizeSettleTimer = setTimeout(() => {
 			resizeSettleTimer = null;
-			enforceAspectRatio();
-		}, 120);
+			void enforceAspectRatio();
+		}, 180);
+	}
+
+	async function restoreWindowSize() {
+		try {
+			const stored = Number(localStorage.getItem('procolorator-window-width'));
+			if (!Number.isFinite(stored) || stored < 280) return;
+			const maxScale = Math.min(screen.availWidth / REFERENCE_WIDTH,
+				screen.availHeight / REFERENCE_HEIGHT);
+			const scale = Math.max(0.7, Math.min(stored / REFERENCE_WIDTH, maxScale));
+			lastWidth = Math.round(REFERENCE_WIDTH * scale);
+			lastHeight = Math.round(REFERENCE_HEIGHT * scale);
+			correctingSize = true;
+			await getCurrentWindow().setSize(new LogicalSize(lastWidth, lastHeight));
+		} catch (error) {
+			console.error('Could not restore window size', error);
+		} finally {
+			correctingSize = false;
+			if (!disposed) updateScale();
+		}
 	}
 
 	function showToast(message: string) {
@@ -1562,7 +1569,12 @@
 
 		const appWindow = getCurrentWindow();
 
-		enforceAspectRatio();
+		void restoreWindowSize();
+		const unlistenClosing = appWindow.onCloseRequested(() => {
+			const scale = Math.max(0.7, Math.min(window.innerWidth / REFERENCE_WIDTH,
+				window.innerHeight / REFERENCE_HEIGHT));
+			localStorage.setItem('procolorator-window-width', String(Math.round(REFERENCE_WIDTH * scale)));
+		});
 
 		const unlistenResized = appWindow.onResized(
 			() => {
@@ -1570,6 +1582,8 @@
 				scheduleAspectRatioCorrection();
 			}
 		);
+
+		const unlistenPickerError = listen<string>('picker-error', (event) => showToast(event.payload));
 
 		const unlistenColorPicked = listen<string>(
 			'color-picked',
@@ -1598,6 +1612,10 @@
 				updateScale
 			);
 
+			disposed = true;
+			unlistenClosing.then((unlisten) => unlisten());
+			unlistenPickerError.then((unlisten) => unlisten());
+
 			if (resizeSettleTimer) {
 				clearTimeout(resizeSettleTimer);
 			}
@@ -1612,17 +1630,13 @@
 		};
 	});
 
-	// The eyedropper itself already copies to the clipboard the
-	// instant you click a pixel (see the picker route) -- this just
-	// launches it. Also reachable via the global shortcut registered
-	// in Rust, so this button mainly exists for discoverability and
-	// for testing on systems where the shortcut might not register
-	// (already-taken combo, permissions, etc.).
+	// The native backend handles picking, clipboard copy, and cancellation.
 	async function openEyedropper() {
 		try {
 			await invoke('open_color_picker');
 		} catch (error) {
 			console.error('Failed to open eyedropper', error);
+			showToast(String(error));
 		}
 	}
 </script>
