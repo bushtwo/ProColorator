@@ -1,16 +1,18 @@
+
 name: Tauri Cross-Platform Build
 
 on:
   push:
-    branches: [ "main" ]
-  workflow_dispatch:     # Allows you to click "Run workflow" in your browser
+    branches: ["main"]
+  workflow_dispatch:
 
 jobs:
   build-tauri:
     permissions:
       contents: write
+
     strategy:
-      fail-fast: false   # IMPORTANT: Stops a Linux error from killing Windows/Mac
+      fail-fast: false
       matrix:
         include:
           - os: macos-latest
@@ -19,38 +21,64 @@ jobs:
             run-platform: windows
 
     runs-on: ${{ matrix.os }}
+
     steps:
+      # 1. Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 1. Setup Node.js
+      # 2. Setup Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      # 2. Setup Rust toolchain
+      # 3. Setup Rust toolchain
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # 3. Cache Rust dependencies
+      # 4. Cache Rust dependencies
       - name: Rust Cache
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
 
-      # 4. Install frontend dependencies
+      # 5. Install frontend dependencies
       - name: Install Frontend Dependencies
-        run: npm install
+        run: npm ci
 
-      # 5. Run the official Tauri build action
+      # 6. Build Tauri application
       - name: Build Tauri Application
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: app-v__VERSION__
-          releaseName: 'App v__VERSION__'
-          releaseBody: 'See the attached assets for your operating system.'
+          releaseName: "App v__VERSION__"
+          releaseBody: "See the attached assets for your operating system."
           releaseDraft: true
           prerelease: false
+
+      # 7. Upload Windows installers
+      - name: Upload Windows Installers
+        if: matrix.run-platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProColorator-Windows
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+          retention-days: 30
+
+      # 8. Upload macOS installers
+      - name: Upload macOS Installers
+        if: matrix.run-platform == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProColorator-macOS
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/macos/*.app/**
+          if-no-files-found: error
+          retention-days: 30
