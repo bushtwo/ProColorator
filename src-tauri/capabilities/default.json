@@ -3,8 +3,7 @@
   "identifier": "default",
   "description": "Default permissions for ProColorator",
   "windows": [
-    "main",
-    "picker"
+    "main"
   ],
   "permissions": [
     "core:default",

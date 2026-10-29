@@ -278,39 +278,6 @@ input:focus-visible {
 	overflow: hidden;
 }
 
-.eyedropper-button {
-	position: absolute;
-
-	top: 10px;
-	right: 10px;
-
-	display: flex;
-	align-items: center;
-	justify-content: center;
-
-	width: 32px;
-	height: 32px;
-
-	border-radius: 6px;
-
-	background: rgba(0, 0, 0, 0.35);
-
-	color: var(--white);
-
-	cursor: pointer;
-}
-
-.eyedropper-button:hover {
-	background: rgba(0, 0, 0, 0.55);
-}
-
-.eyedropper-button svg {
-	width: 18px;
-	height: 18px;
-
-	flex: 0 0 18px;
-}
-
 /* =========================================================
  *  Model buttons
  *

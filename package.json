@@ -1,7 +1,7 @@
 {
   "name": "procolorator",
   "version": "0.1.0",
-  "description": "",
+  "description": "A desktop color chooser for exploring, adjusting, and copying colors",
   "type": "module",
   "scripts": {
     "dev": "vite dev",

@@ -1,8 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
-	import { invoke } from '@tauri-apps/api/core';
-	import { listen } from '@tauri-apps/api/event';
+	import { isTauri } from '@tauri-apps/api/core';
 
 	const REFERENCE_WIDTH = 400;
 	const REFERENCE_HEIGHT = 744;
@@ -1535,7 +1534,7 @@
 	}
 
 	onMount(() => {
-		getCurrentWindow()
+		if (isTauri()) getCurrentWindow()
 			.setFocus()
 			.catch(() => {});
 
@@ -1567,6 +1566,11 @@
 		syncControls();
 		updateScale();
 
+		// Also allow a browser preview for product screenshots and UI development.
+		if (!isTauri()) {
+			window.addEventListener('resize', updateScale);
+			return () => window.removeEventListener('resize', updateScale);
+		}
 		const appWindow = getCurrentWindow();
 
 		void restoreWindowSize();
@@ -1583,23 +1587,6 @@
 			}
 		);
 
-		const unlistenPickerError = listen<string>('picker-error', (event) => showToast(event.payload));
-
-		const unlistenColorPicked = listen<string>(
-			'color-picked',
-			(event) => {
-				const parsed = hexToRgb(event.payload);
-
-				if (parsed) {
-					rgb = parsed;
-					syncControls();
-				}
-
-				addToHistory(event.payload);
-				activeTab = 'selector';
-				showToast(`${event.payload} is copied to clipboard`);
-			}
-		);
 
 		window.addEventListener(
 			'resize',
@@ -1614,7 +1601,6 @@
 
 			disposed = true;
 			unlistenClosing.then((unlisten) => unlisten());
-			unlistenPickerError.then((unlisten) => unlisten());
 
 			if (resizeSettleTimer) {
 				clearTimeout(resizeSettleTimer);
@@ -1624,21 +1610,9 @@
 				unlisten()
 			);
 
-			unlistenColorPicked.then((unlisten) =>
-				unlisten()
-			);
 		};
 	});
 
-	// The native backend handles picking, clipboard copy, and cancellation.
-	async function openEyedropper() {
-		try {
-			await invoke('open_color_picker');
-		} catch (error) {
-			console.error('Failed to open eyedropper', error);
-			showToast(String(error));
-		}
-	}
 </script>
 
 <div class="viewport">
@@ -1690,35 +1664,12 @@
 					on:click={() =>
 						(activeTab = 'selector')}
 				>
-					<svg
-						class="tab-icon"
-						width="20"
-						height="20"
-						viewBox="0 0 24 24"
-						fill="none"
-						aria-hidden="true"
-					>
-						<path
-							d="m2 22 1-1h3l9-9"
-							stroke="currentColor"
-							stroke-width="1.5"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-						/>
-						<path
-							d="M3 21v-3l9-9"
-							stroke="currentColor"
-							stroke-width="1.5"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-						/>
-						<path
-							d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z"
-							stroke="currentColor"
-							stroke-width="1.5"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-						/>
+					<svg class="tab-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+						<path d="M12 3a9 9 0 1 0 0 18h1.5a2 2 0 0 0 1.4-3.4 1.5 1.5 0 0 1 1.1-2.6H18a3 3 0 0 0 3-3 9 9 0 0 0-9-9Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+						<circle cx="7.5" cy="10" r="1.2" fill="currentColor" />
+						<circle cx="11" cy="7" r="1.2" fill="currentColor" />
+						<circle cx="15.5" cy="8" r="1.2" fill="currentColor" />
+						<circle cx="7.5" cy="14.5" r="1.2" fill="currentColor" />
 					</svg>
 
 					<span>Selector</span>
@@ -1775,43 +1726,7 @@
 						class="color-preview"
 						style={`background: ${rgbToHex(rgb)}`}
 					>
-						<button
-							type="button"
-							class="eyedropper-button"
-							on:click={openEyedropper}
-							title="Pick a color from your screen (Ctrl+Shift+C)"
-							aria-label="Pick a color from your screen"
-						>
-							<svg
-								width="18"
-								height="18"
-								viewBox="0 0 24 24"
-								fill="none"
-								aria-hidden="true"
-							>
-								<path
-									d="m2 22 1-1h3l9-9"
-									stroke="currentColor"
-									stroke-width="1.8"
-									stroke-linecap="round"
-									stroke-linejoin="round"
-								/>
-								<path
-									d="M3 21v-3l9-9"
-									stroke="currentColor"
-									stroke-width="1.8"
-									stroke-linecap="round"
-									stroke-linejoin="round"
-								/>
-								<path
-									d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z"
-									stroke="currentColor"
-									stroke-width="1.8"
-									stroke-linecap="round"
-									stroke-linejoin="round"
-								/>
-							</svg>
-						</button>
+
 					</section>
 
 					<section class="model-grid">
